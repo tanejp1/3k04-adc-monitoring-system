@@ -17,7 +17,7 @@ import uuid
 import registry
 
 # Demo decision (not course-supplied): how long we wait for a cabinet's reply.
-# The simulator answers instantly, so "no reply" is treated as the deadline passing.
+# A missing or inconclusive reply becomes Uncertain when this deadline passes.
 T_RESP = 3
 
 MESSAGE_TYPES = ["status", "inventory", "alarm", "maintenance", "health"]
@@ -57,7 +57,11 @@ class Gateway:
         self._transport = None                       # function used to send to cabinets
 
     def set_transport(self, function):
-        """Tell the gateway how to deliver outbound requests (the simulator, or Part A later)."""
+        """Set a delivery function taking (cabinet_id, request, timeout=seconds).
+
+        The transport must return or raise TimeoutError within the given timeout.
+        A future network transport must apply that timeout to its I/O operations.
+        """
         self._transport = function
 
     # ---------------- validation ----------------
@@ -194,17 +198,28 @@ class Gateway:
             return "Denied"                          # authorization BEFORE sending
         request_id = str(uuid.uuid4())               # unique ID to match the reply
         request = {"request_id": request_id, "info": info}
+        started = time.monotonic()
+        deadline = started + T_RESP
         reply = None
         if self._transport is not None:
-            reply = self._transport(cabinet_id, request)
+            try:
+                reply = self._transport(cabinet_id, request, timeout=T_RESP)
+            except (TimeoutError, OSError):
+                reply = None                       # delivery may have happened; success is unknown
         outcome = "Uncertain"                        # default: a timeout is NEVER shown as success
-        if isinstance(reply, dict) and reply.get("request_id") == request_id:
+        if (time.monotonic() < deadline and isinstance(reply, dict)
+                and reply.get("request_id") == request_id):
             if reply.get("result") == "confirmed":
                 outcome = "Confirmed"
             elif reply.get("result") == "rejected":
                 outcome = "Rejected"
+        if outcome == "Uncertain":
+            remaining = deadline - time.monotonic()
+            if remaining > 0:
+                time.sleep(remaining)              # do not announce a timeout before its deadline
+        completed_at = now + (time.monotonic() - started)
         # Keep a record of the outcome (request_id is unique, so this saves once)
-        self._store.save_event(request_id, cabinet_id, "outbound", now, now,
+        self._store.save_event(request_id, cabinet_id, "outbound", now, completed_at,
                                {"outcome": outcome, "info": info})
         return outcome
 

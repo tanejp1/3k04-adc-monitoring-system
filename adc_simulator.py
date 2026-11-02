@@ -55,9 +55,10 @@ class Simulator:
         if cabinet in self.paused:
             self.paused.remove(cabinet)
 
-    def deliver(self, cabinet, request):
-        """Handle an outbound request from Monitoring. Returns None for 'no reply'."""
+    def deliver(self, cabinet, request, timeout):
+        """Reply immediately, or wait for the timeout if the cabinet stays silent."""
         if cabinet in self.paused or self.modes[cabinet] == "silent":
+            time.sleep(timeout)
             return None                           # no response at all
         if self.modes[cabinet] == "reject":
             return {"request_id": request["request_id"], "result": "rejected"}
